@@ -23,6 +23,7 @@ Gem::Specification.new do |s|
 
   s.add_development_dependency "rspec", "~> 1.3"
   s.add_development_dependency "mocha"
-  s.add_development_dependency "mysql"
+  # found issues using mysql 2.8 and running spec
+  s.add_development_dependency "mysql", "2.7"
 end
 

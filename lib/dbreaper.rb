@@ -2,35 +2,44 @@ require 'active_record'
 class DbReaperError < StandardError; end
 
 module DbReaper
-
-  class ReapableConfig 
-    attr_accessor :move_records, :expiry, :dump_to_file, :preserve_backup_table
-    def initialize args
-      args.each do |k,v|
-        self.send(k.to_s+"=",v)
-      end
-    end
-  end
+  DEFAULT_CONFIG = { :reaper_data_dir => 'reaped',
+    :move_records => true,
+    :expiry => 7776000,
+    :dump_to_file => true,
+    :preserve_backup_table => false,
+    :backup_table_prefix => 'reaper_',
+    :logger => (defined? RAILS_DEFAULT_LOGGER) ? RAILS_DEFAULT_LOGGER : Logger.new(STDERR)
+  }
 
   class Config 
-    attr_accessor :reaper_data_dir, :default, :overrides, :backup_table_prefix
-    def initialize args
+    attr_accessor :reaper_data_dir, :backup_table_prefix, :logger, :move_records, :expiry, 
+                  :dump_to_file, :preserve_backup_table
+    def initialize(args = {})
+      self.merge(DEFAULT_CONFIG)
       args.each do |k,v|
-        self.send(k.to_s+"=",v)
+        self.send(k.to_s+"=",v) unless v.nil?
       end
+    end
+
+    def merge opts
+      opts.keys.each do |k|
+        assign = k.to_s + "="
+        if (self.respond_to? assign) && (!opts[k].nil?)
+          self.send(assign, opts[k])
+        end
+      end
+      self
+    end
+
+    def to_s
+      config.attributes.join(', ')
     end
   end
 
-  attr_accessor :logger
+  delegate :logger, :to => :config
 
   def self.config
-    default_reapable_cfg = ReapableConfig.new(:move_records => true,
-                                              :expiry => 7776000,
-                                              :dump_to_file => true,
-                                              :preserve_backup_table => false)
-    @@config ||= Config.new(:reaper_data_dir => 'reaped',
-                            :default => default_reapable_cfg,
-                            :backup_table_prefix => 'reaper_')
+    @@config ||= Config.new()
   end
   
   def self.configure
@@ -50,7 +59,7 @@ module DbReaper
   
   def reap options = {}
     unless has_mysqldump
-      logger.error("mysqldump is not available in your environment.  DbReaper will not do anything until this has been resolved.")
+      self.logger.error("mysqldump is not available in your environment.  DbReaper will not do anything until this has been resolved.")
       return 0
     end
     # each time we reap, set the start time
@@ -63,12 +72,11 @@ module DbReaper
     # and can be individually specified for each class for which DbReaper is mixed in.
     # To disable that created_at clause, add 'ignore_expiry' => true to the input options.
     # If this is in place, :conditions will define what is cleaned an what is not
-    backup_table_name = config.backup_table_prefix +"#{table_name}_#{reap_time}"
+    backup_table_name = "#{config.backup_table_prefix}#{table_name}_#{reap_time}"
 
-    table_reaper_config = config.overrides[table_name] || config.default
     # update conditions
     conditions = [options.delete(:conditions)]
-    conditions << ['created_at < ?', table_reaper_config.expiry.seconds.ago] unless options[:ignore_expiry]
+    conditions << ['created_at < ?', config.expiry.seconds.ago] unless options[:ignore_expiry]
     
     options[:conditions] = conditions.reject{|opt| opt.blank?}.map{|c| "(#{sanitize_sql(c)})"}.join(' and ')
 
@@ -87,7 +95,6 @@ module DbReaper
     
     # build outfile name based on timestamp 
     fname = "#{dbcfg['database']}.reaped_#{table_name}_#{reap_time}.sql"
-    p "CFG", config.reaper_data_dir
     dir = File.join(config.reaper_data_dir, table_name)
     FileUtils.mkdir_p(dir, :mode => 0775)
     reaper_output_file = File.join(dir, fname)
@@ -109,7 +116,7 @@ module DbReaper
       ActiveRecord::Base.connection.execute("drop table if exists `#{backup_table_name}`") unless config.preserve_backup_table # default should be false
     else
       msg = "Failed to run mysqldump cmd [#{cmd}]. Error from system #{$?}. Data is left in the database under #{backup_table_name}"
-      logger.error(msg)
+      self.logger.error(msg)
       raise DbReaperError.new(msg)
     end
     success

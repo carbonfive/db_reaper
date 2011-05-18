@@ -1,6 +1,7 @@
 require File.dirname(__FILE__) + '/../spec_helper'
 require 'active_record'
 require 'dbreaper'
+require 'mysql'
 
 class MyReapable < ActiveRecord::Base
   extend DbReaper
@@ -15,7 +16,7 @@ describe DbReaper do
     5.times.each do |t|
       MyReapable.create(:created_at => (t+2).weeks.ago)
     end
-    @reaped_table_name = "reaped_my_reapables_#{Time.now.strftime('%Y%m%d%H%M%S')}"
+    @reaped_table_name = "reaper_my_reapables_#{Time.now.strftime('%Y%m%d%H%M%S')}"
     MyReapable.stubs(:config => valid_config,
               :system => true)
   end
@@ -66,13 +67,13 @@ describe DbReaper do
         MyReapable.reap.should == 2
       end
       it "the old table maintains the records if the configuration says move_records is false" do
-        MyReapable.expects(:config).at_least_once.returns(valid_config({"move_records" => false}))
+        MyReapable.expects(:config).at_least_once.returns(valid_config("move_records" => false))
         expect{ MyReapable.reap }.to change(MyReapable, :count).by(0)
         execute_and_fetch("select id from `#{@reaped_table_name}`").flatten.should == ["4", "5"].sort
       end
       it "the old table no longer contains the reaped records and maintains :conditions and expiry" do
         cfg = valid_config
-        expiry = cfg["expiry"]
+        expiry = cfg.expiry
         partitioned = MyReapable.all.partition{|lg| (lg.id % 2) == 0 && lg.created_at < expiry.seconds.ago}
         MyReapable.reap  :conditions => 'mod(id,2) = 0'
         execute_and_fetch("select id from `#{@reaped_table_name}`").flatten.map(&:to_i).should == partitioned[0].map(&:id)
@@ -98,16 +99,31 @@ describe DbReaper do
       FileUtils.stubs(:mkdir_p)
     end
     it "returns true on success" do
-      MyReapable.send(:dump_backup_table,'ablename','timestamp').should == true
+      MyReapable.send(:dump_backup_table,'tablename','timestamp').should == true
     end
     it "raises DbReaperError on failure" do
       MyReapable.stubs(:system => false)
       lambda{ MyReapable.send(:dump_backup_table,'tablename','timestamp') }.should raise_error(DbReaperError)
     end
   end
+
+  describe "config" do
+    it 'honors input move records parameter' do
+      DbReaper::Config.new(:move_records => true).move_records.should == true
+      DbReaper::Config.new(:move_records => false).move_records.should == false
+    end
+    it 'sets defaults' do
+      cfg = DbReaper::Config.new()
+      DbReaper::DEFAULT_CONFIG.each do |k,v|
+        cfg.send(k).should be == v, "Default config value for #{k} was not properly set (#{cfg.send(k)} <> #{v})"
+      end
+    end
+  end
+
   after do
     ActiveRecord::Migration.drop_table :my_reapables
   end
+
 end
 
 
@@ -121,12 +137,11 @@ def execute_and_fetch sql
 end
 
 def valid_config(cfg = {}) 
-  table_cfg = DbReaper::ReapableConfig.new(:move_records =>  true,
-                                           :expiry =>  2592000,
-                                           :dump_to_file =>  true,
-                                           :preserve_backup_table => true)
   DbReaper::Config.new(:reaper_data_dir => 'reapit_test',
-                       :default => table_cfg)
+                       :move_records =>  true,
+                       :expiry =>  2592000,
+                       :dump_to_file =>  true,
+                       :preserve_backup_table => true).merge(cfg)
 end
 
 def reaper_output_file
@@ -135,7 +150,7 @@ end
 
 def cleanup
   ActiveRecord::Base.connection.execute("drop table if exists `#{@reaped_table_name}`")
-  dir = File.join(valid_config['reaper_data_dir'], 'logs')
+  dir = File.join(valid_config.reaper_data_dir, 'logs')
   Dir.glob(File.join(dir,'*.sql')).each do |f|
     FileUtils.rm(f)
   end

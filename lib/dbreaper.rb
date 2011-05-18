@@ -38,11 +38,11 @@ module DbReaper
 
   delegate :logger, :to => :config
 
-  def self.config
+  def config
     @@config ||= Config.new()
   end
   
-  def self.configure
+  def configure
     yield self.config
   end
 
@@ -91,22 +91,23 @@ module DbReaper
   private
   def dump_backup_table backup_table_name, reap_time
     dbcfg = ActiveRecord::Base.connection.instance_variable_get(:@config)
-    dbcfg['username'] ||= 'root'
-    
+    dbcfg[:username] ||= 'root'
     # build outfile name based on timestamp 
-    fname = "#{dbcfg['database']}.reaped_#{table_name}_#{reap_time}.sql"
+    fname = "#{dbcfg[:database]}.reaped_#{table_name}_#{reap_time}.sql"
     dir = File.join(config.reaper_data_dir, table_name)
     FileUtils.mkdir_p(dir, :mode => 0775)
     reaper_output_file = File.join(dir, fname)
 
     # build commandline as array
     args = [ mysqldump ]
-    args << "--socket=#{dbcfg['socket']}" if dbcfg.has_key? 'socket'
-    args << "--port=#{dbcfg['port']}" if dbcfg.has_key? 'port'
-    args << "--host=#{dbcfg['host']}" if dbcfg.has_key? 'host'
-    args << "--user=#{dbcfg['username']}" if dbcfg.has_key? 'username'
-    args << "--password=#{dbcfg['password']}" if dbcfg.has_key? 'password'
-    args << "#{dbcfg['database']} #{backup_table_name}"
+    [[ 'user', :username ],
+     [ 'socket', :socket ],
+     [ 'port', :port ],
+     [ 'host', :host ],
+     [ 'password', :password ]].each do |keys| 
+      args << "--#{keys[0]}=#{dbcfg[keys[1]]}" if dbcfg.has_key? keys[1]
+    end
+    args << "#{dbcfg[:database]} #{backup_table_name}"
     args << " > #{reaper_output_file}"
     cmd = args.join(" ")
     success = system cmd
